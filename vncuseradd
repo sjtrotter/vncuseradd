@@ -48,7 +48,7 @@ parse_args () {
                 a) ADMIN=yes ;;
                 h) usage; finish 0 "";;
                 p) PASSWORD="${OPTARG}" ;;
-                ?) finish 2 ;;
+                ?) finish 2 "unkown option: ${OPTARG}";;
             esac
         else
             ARGS+=("${!OPTIND}")
