@@ -9,7 +9,10 @@ readonly ANSI_CLEAR="\033[0m"
 
 unset ADMIN
 unset PASSWORD
+unset DEBUG
 ARGS=()
+CURRENT_SYS_USERS=()
+CURRENT_VNC_USERS=()
 
 
 finish () {
@@ -36,6 +39,7 @@ Options:\n\
                 for more than one LOGIN, PASSWORD will apply to all. \n\
                 this input method is *NOT SECURE*. have user change ASAP.\n\
   -h            display this help message and exit \n\
+  -v            turn on debug
 \n"
 }
 
@@ -48,6 +52,7 @@ parse_args () {
                 a) ADMIN=yes ;;
                 h) usage; finish 0 "";;
                 p) PASSWORD="${OPTARG}" ;;
+                v) DEBUG=yes ;;
                 ?) finish 2 "unkown option: ${OPTARG}";;
             esac
         else
@@ -134,8 +139,24 @@ print_userports () {
         echo
 }
 
+get_sysusers () {
+
+}
+
+get_vncusers () {
+    vnclist=($(grep -v "#" /etc/tigervnc/vncserver.users))
+    for ((i=0, i<${#vnclist[@]}; i++)); do
+        vnclist[$i]=$(echo ${vnclist[$i]} | cut -d '=' -f2)
+    done
+    # debug
+    for user in ${vnclist[@]}; do
+        printf "found vncuser $user\n"
+    done
+}
+
 main () {
-    parse_args "$@"
+    parse_args "$@" # sets ARGS[@] to supplied usernames
+    get_vncusers
     create_userfile
     create_users
     set_admin
