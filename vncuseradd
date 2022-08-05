@@ -4,8 +4,11 @@ readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
 readonly ERR_NO_PASSWD=67
+readonly USER_FILE="/tmp/newusers"
 readonly ANSI_RED="\033[1;31m"
 readonly ANSI_CLEAR="\033[0m"
+readonly ANSI_YELLOW="\033[1;93m"
+
 
 unset ADMIN
 unset PASSWORD
@@ -13,6 +16,8 @@ unset DEBUG
 ARGS=()
 CURRENT_SYS_USERS=()
 CURRENT_VNC_USERS=()
+CHOWN_LIST=()
+
 
 
 finish () {
@@ -44,7 +49,7 @@ Options:\n\
 }
 
 parse_args () {
-    optstring="ahp:"
+    optstring="ahp:v"
 
     while [[ $OPTIND -le "$#" ]]; do
         if getopts ${optstring} arg; then
@@ -70,26 +75,35 @@ parse_args () {
     fi
 }
 
-create_userfile () {
-    printf "" > /tmp/newusers
-    for user in ${ARGS[@]}; do
-        printf "$user:$PASSWORD:::$user:/home/$user:/bin/bash\n" >> /tmp/newusers
-    done
+write_userfile () {
+    local user="$1"
+    local userfile="$2"
+    debug "writing $user to $userfile"
+    if [[ ! -f ${userfile} ]]; then touch ${userfile}; fi
+    printf "$user:$PASSWORD:::$user:/home/$user:/bin/bash\n" >> "${userfile}"
+}
+
+create_home () {
+    local user="$1"
+    if [[ ! -d /home/${user} ]]; then
+        debug "creating $user's homedir"
+        sudo cp -r /etc/skel /home/$user
+    else
+        debug "skipping $user's homedir, already there"
+    fi
 }
 
 create_users () {
-    for user in ${ARGS[@]}; do
-        if [[ ! -d /home/$user ]]; then
-            sudo bash -c "cp -r /etc/skel /home/$user"
-        fi
-    done
-    sudo newusers /tmp/newusers
-    rm -rf /tmp/newusers
+    local userfile="$1"
+    debug "creating users from ${userfile}"
+    sudo newusers "${userfile}"
+    rm -rf "${userfile}"
+}
 
-    for user in ${ARGS[@]}; do
-        sudo chown $user:$user /home/$user
-    done
-    
+chown_home () {
+    local user="$1"
+    debug "chown $user's homedir"
+    sudo chown -R $user:$user /home/$user
 }
 
 set_vnc () {
@@ -116,11 +130,9 @@ set_vnc () {
 }
 
 set_admin () {
-    if [[ $ADMIN == "yes" ]]; then
-        for user in ${ARGS[@]}; do
-            sudo usermod -aG wheel $user
-        done
-    fi
+    local user="$1"
+    debug "making $user admin"
+    sudo usermod -aG wheel $user
 }
 
 print_userports () {
@@ -140,28 +152,78 @@ print_userports () {
 }
 
 get_sysusers () {
+    debug "getting system user list..."
+    syslist=($(cat /etc/passwd))
+    for ((i=0; i<${#syslist[@]}; i++)); do
+        syslist[$i]=$(echo ${syslist[$i]} | cut -d ':' -f1)
+    done
 
+    local dbstr="found system users:"
+    for item in ${syslist[@]}; do
+        dbstr="${dbstr} $item"
+    done
+    debug "$dbstr"
+    echo "${syslist[@]}"
 }
 
 get_vncusers () {
+    debug "getting VNC user list..."
     vnclist=($(grep -v "#" /etc/tigervnc/vncserver.users))
-    for ((i=0, i<${#vnclist[@]}; i++)); do
+    for ((i=0; i<${#vnclist[@]}; i++)); do
         vnclist[$i]=$(echo ${vnclist[$i]} | cut -d '=' -f2)
     done
-    # debug
-    for user in ${vnclist[@]}; do
-        printf "found vncuser $user\n"
+    
+    local dbstr="found vnc users:"
+    for item in ${vnclist[@]}; do
+        dbstr="${dbstr} $item"
     done
+    debug "$dbstr"
+    echo "${vnclist[@]}"
+}
+
+debug () {
+    local msg="$1"
+    if [[ ${DEBUG} ]]; then
+        printf "${ANSI_YELLOW}[-]${ANSI_CLEAR} %s\n" "${msg}" >&2
+    fi
 }
 
 main () {
     parse_args "$@" # sets ARGS[@] to supplied usernames
-    get_vncusers
-    create_userfile
-    create_users
-    set_admin
-    set_vnc
-    print_userports
+    CURRENT_SYS_USERS=($(get_sysusers))
+    CURRENT_VNC_USERS=($(get_vncusers))
+    # pre-create user
+    for user in ${ARGS[@]}; do
+        if [[ ! " ${CURRENT_SYS_USERS[@]} " =~ " ${user} " ]]; then
+            create_home "$user"
+            write_userfile "$user" "${USER_FILE}"
+            CHOWN_LIST+=("$user")
+        else
+            debug "skipping $user, already created"
+        fi
+    done
+
+    if [[ -f ${USER_FILE} ]]; then
+        create_users "${USER_FILE}"
+        for user in ${CHOWN_LIST[@]}; do
+            chown_home $user
+            if [[ "${ADMIN}" == "yes" ]];then
+                set_admin $user
+            fi
+        done
+    fi
+
+    # post-create user
+    for user in ${ARGS[@]}; do
+        if [[ " ${CURRENT_VNC_USERS[@]} " =~ " ${user} " ]]; then
+            printf "${user} already in vnc\n"
+        fi
+    done
+    # write_userfile
+    # create_users
+    # set_admin
+    # set_vnc
+    # print_userports
 }
 
 if [[ ! -f /etc/tigervnc/vncserver.users ]]; then
