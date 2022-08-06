@@ -46,6 +46,7 @@ Options:\n\
   -h            display this help message and exit \n\
   -s            starts the services now (otherwise reboot or start manually)\n\
   -v            turn on debug mode\n\
+  -V            display version
 \n"
 }
 
