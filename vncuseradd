@@ -70,10 +70,6 @@ parse_args () {
     if [[ ${#ARGS[@]} -lt 1  ]]; then
         finish $ERR_NO_LOGIN "no LOGIN given"
     fi
-
-    if [[ ! ${PASSWORD} ]]; then
-        finish $ERR_NO_PASSWD "no PASSWORD given"
-    fi
 }
 
 write_userfile () {
@@ -158,7 +154,7 @@ get_display () {
 
     if [[ ${uid_end:0:1} -eq 0 ]]; then uid_end=${uid_end:1:1}; fi
 
-    local display_num="$((${uid_end} + 9))"
+    local display_num="$((${uid_end} + 10))"
     debug "display :$display_num"
     echo ":${display_num}"
 }
@@ -216,6 +212,9 @@ main () {
     # pre-create user - system
     for user in ${ARGS[@]}; do
         if [[ ! " ${CURRENT_SYS_USERS[@]} " =~ " ${user} " ]]; then
+            if [[ ! ${PASSWORD} ]]; then
+                finish $ERR_NO_PASSWD "new user given with no PASSWORD"
+            fi
             create_home "$user"
             write_userfile "$user" "${USER_FILE}"
             CHOWN_LIST+=("$user")
