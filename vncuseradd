@@ -59,7 +59,7 @@ parse_args () {
                 p) PASSWORD="${OPTARG}" ;;
                 s) START_SVC=yes ;;
                 v) DEBUG=yes ;;
-                ?) finish 2 "unkown option: -${OPTARG}";;
+                ?) finish "${ERR_UNK_OPT}" "unkown option: -${OPTARG}";;
             esac
         else
             ARGS+=("${!OPTIND}")
