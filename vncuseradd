@@ -40,7 +40,7 @@ Usage: vncuseradd [OPTION] -p PASSWORD LOGIN [LOGIN]...\n\
 \n\
 Options:\n\
   -a            make the LOGIN(s) an admin account\n\
-  -p PASSWORD   password of the new account\n\
+  -p PASSWORD   system password (not VNC) of the new account\n\
                 for more than one LOGIN, PASSWORD will apply to all. \n\
                 this input method is *NOT SECURE*. have user change ASAP.\n\
   -h            display this help message and exit \n\
