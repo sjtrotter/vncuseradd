@@ -1,4 +1,4 @@
-% VNCUSERADD(1) vncuseradd 1.0.0
+% VNCUSERADD(8) vncuseradd 1.0.0
 % Stephen Trotter
 % August 2022
 
@@ -58,7 +58,7 @@ VNC users created with this utility will have their default password set to *pas
 : No *LOGIN* given as a positional parameter.
 
 **67**
-: No *-p PASSWORD* given, and user not in system yet.
+: No *-p PASSWORD* given for user not in system yet.
 
 # BUGS
 - -a will not have an effect if the user is already created, or if they are created and the home directory was already present before running this utility; i.e. this script will only add users to wheel if they are created by it completely.
