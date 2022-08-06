@@ -25,7 +25,7 @@ finish () {
     local msg="$2"
     if [[ $rc -gt 0 ]]; then
         printf "${ANSI_RED}%s: %s${ANSI_CLEAR}\n" "$(basename $0)" "${msg}"
-        usage
+        printf "Try: $(basename $0) -h\n"
     fi
     exit ${rc}
 } >&2
@@ -33,7 +33,7 @@ finish () {
 usage () {
     printf "\n\
 $(basename $0)  - add new LOGIN(s) with VNC capabilities\n\
-* needs TigerVNC Server installed with config at /etc/tigervnc/vncserver.users\n\
+* needs TigerVNC Server installed with config at ${VNC_USER_CONFIG}\n\
 * VNC passwords are set to 'password' by default.\n\
 \n\
 Usage: vncuseradd [OPTION] -p PASSWORD LOGIN [LOGIN]...\n\
