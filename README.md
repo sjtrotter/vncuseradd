@@ -2,8 +2,7 @@
 adds new LOGIN(s) with VNC capabilities
 
 * needs TigerVNC Server installed with config at /etc/tigervnc/vncserver.users
-* 
-VNC passwords are set to 'password' by default.
+* VNC passwords are set to 'password' by default.
 
 ```
 vncuseradd - adds new LOGIN(s) with VNC capabilities
@@ -23,4 +22,4 @@ Options:
   ```
   
 # TODO
-- allow use without -p to add vnc for existing users. (currently only allows exec with -p option)
+- all done for now.
