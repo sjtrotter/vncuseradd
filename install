@@ -9,6 +9,6 @@ sudo mkdir -p /usr/local/man/man8
 sudo cp ${SCRIPT_DIR}/vncuseradd.8.gz /usr/local/man/man8
 
 echo "updating man database..."
-sudo mandb
+sudo mandb 2>&1>/dev/null
 
 echo "done!"
