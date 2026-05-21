@@ -6,10 +6,9 @@ readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
 readonly ERR_NO_PASSWD=67
-readonly ERR_DISPLAY_COLLISION=68
 readonly USER_FILE="/tmp/newusers"
 readonly VNC_USER_CONFIG="/etc/tigervnc/vncserver.users"
-readonly DISPLAY_OFFSET=10
+readonly MIN_DISPLAY=10
 readonly VNC_PORT_BASE=5900
 readonly ANSI_RED='\033[1;31m'
 readonly ANSI_CLEAR='\033[0m'
@@ -163,15 +162,13 @@ set_admin () {
     sudo usermod -aG wheel "$user"
 }
 
-# Maps UID to display number using the last two digits of the UID + offset.
-# Collisions (e.g. UID 1000 and 1100 both -> :10) are detected by the caller
-# against existing VNC config and reported via ERR_DISPLAY_COLLISION rather
-# than silently appending a duplicate.
-get_display () {
-    local user="$1"
-    local uid
-    uid=$(id -u "$user")
-    printf ':%s' "$(( uid % 100 + DISPLAY_OFFSET ))"
+next_free_display () {
+    local -n taken_ref="$1"
+    local n=$MIN_DISPLAY
+    while [[ -n ${taken_ref[:$n]:-} ]]; do
+        n=$((n + 1))
+    done
+    printf ':%s' "$n"
 }
 
 print_vnc_info () {
@@ -227,11 +224,8 @@ main () {
             vnc_status+=("skipping $user, already in VNC config")
             continue
         fi
-        display=$(get_display "$user")
-        if [[ -n ${vnc_display_set[$display]:-} ]]; then
-            finish "$ERR_DISPLAY_COLLISION" \
-                "display $display for $user already assigned (UID-based mapping collision)"
-        fi
+        display=$(next_free_display vnc_display_set)
+        debug "assigning display $display to $user"
         write_vncconfig "$user" "$display"
         vnc_display_set[$display]=1
         set_vncpasswd "$user"

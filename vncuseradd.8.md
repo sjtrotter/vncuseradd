@@ -10,7 +10,7 @@ vncuseradd - add new LOGIN(s) with VNC capabilities
 **vncuseradd** [*OPTION*] -p *PASSWORD* *LOGIN* [*LOGIN*]...
 
 # DESCRIPTION
-**vncuseradd** utilizes the `newusers' utility to create LOGIN(s) in bulk (if they are not already created) and then assigns them a VNC display number based on their UID.
+**vncuseradd** utilizes the `newusers' utility to create LOGIN(s) in bulk (if they are not already created) and then assigns each LOGIN the next available VNC display number, starting from *:10*.
 
 **vncuseradd** expects TigerVNC to be installed on the system, with the user configuration file stored at **/etc/tigervnc/vncserver.users**.
 
