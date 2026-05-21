@@ -13,9 +13,9 @@ Run `vncuseradd -h` for a quick reference, or `man vncuseradd` once installed fo
 ```
   -a            make the LOGIN(s) an admin account (adds user(s) to wheel
                 group)
-  -p PASSWORD   Default password of the new user(s). For more than one LOGIN,
-                PASSWORD will apply to all. This input method is NOT SECURE -
-                have user(s) change ASAP with passwd
+  -o FILE       also write generated credentials to FILE (created with mode
+                0600). Without this flag, credentials are printed to stdout
+                only.
   -h            Display the help message.
   -s            Starts the VNC service(s) now (otherwise reboot or start
                 manually)
