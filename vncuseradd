@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
@@ -131,13 +131,13 @@ preflight_creds_file () {
     [[ -z $CREDS_FILE ]] && return 0
     local dir
     dir=$(dirname -- "$CREDS_FILE")
-    if ! sudo test -d "$dir"; then
+    if [[ ! -d $dir ]]; then
         finish "$ERR_FILE_WRITE" "credentials file directory does not exist: $dir"
     fi
-    if ! sudo touch "$CREDS_FILE" 2>/dev/null; then
+    if ! touch "$CREDS_FILE" 2>/dev/null; then
         finish "$ERR_FILE_WRITE" "cannot create credentials file: $CREDS_FILE"
     fi
-    sudo chmod 600 "$CREDS_FILE"
+    chmod 600 "$CREDS_FILE"
 }
 
 get_sysusers () {
@@ -174,45 +174,48 @@ create_home () {
         return
     fi
     debug "creating $user's homedir"
-    sudo cp -r /etc/skel "/home/$user"
+    cp -r /etc/skel "/home/$user"
 }
 
 create_users () {
     local userfile="$1"
     debug "creating users from $userfile"
-    sudo newusers "$userfile"
+    newusers "$userfile"
 }
 
 chown_home () {
     local user="$1"
     debug "chown $user's homedir"
-    sudo chown -R "$user:$user" "/home/$user"
+    chown -R "$user:$user" "/home/$user"
 }
 
 expire_password () {
     local user="$1"
     debug "expiring system password for $user (force reset on first login)"
-    sudo passwd --expire "$user" >/dev/null
+    passwd --expire "$user" >/dev/null
 }
 
 set_vncpasswd () {
     local user="$1"
     local pass="$2"
     debug "setting vncpasswd for $user..."
-    printf '%s\n%s\n' "$pass" "$pass" | sudo -Hu "$user" vncpasswd >/dev/null 2>&1
+    # su -l: login shell (sets HOME, USER, SHELL for target user). -s /bin/sh:
+    # don't run target's custom shell. Stdin pipe carries the password to
+    # vncpasswd, which reads it twice (entry + confirmation).
+    printf '%s\n%s\n' "$pass" "$pass" | su -l "$user" -s /bin/sh -c 'vncpasswd >/dev/null 2>&1'
 }
 
 write_vncconfig () {
     local user="$1"
     local display="$2"
     debug "writing vnc config for $user on display $display"
-    printf '%s=%s\n' "$display" "$user" | sudo tee -a "$VNC_USER_CONFIG" >/dev/null
+    printf '%s=%s\n' "$display" "$user" >> "$VNC_USER_CONFIG"
 }
 
 set_admin () {
     local user="$1"
     debug "making $user admin"
-    sudo usermod -aG wheel "$user"
+    usermod -aG wheel "$user"
 }
 
 next_free_display () {
@@ -240,7 +243,19 @@ build_report () {
 }
 
 main () {
+    # Parse args before re-exec: -h, -V, and argument errors don't need
+    # root, so handling them up front means a non-root user gets help or
+    # an error without an unnecessary sudo prompt.
     parse_args "$@"
+
+    # Everything below (newusers, chpasswd, systemctl, writing to
+    # $VNC_USER_CONFIG, su to other users) needs root. Re-exec once via
+    # sudo instead of prefixing every call. When invoked from automation
+    # that's already root (ansible become: true, or `sudo vncuseradd ...`),
+    # EUID is already 0 and we skip the re-exec, so there's no double-sudo.
+    if (( EUID != 0 )); then
+        exec sudo -E -- "$0" "$@"
+    fi
 
     if [[ ! -f $VNC_USER_CONFIG ]]; then
         finish "$ERR_NO_VNCSRV" "tigervnc-server config not found"
@@ -305,10 +320,10 @@ main () {
     done
 
     if (( ${#ENABLE_UNITS[@]} > 0 )); then
-        sudo systemctl --quiet enable "${ENABLE_UNITS[@]}"
+        systemctl --quiet enable "${ENABLE_UNITS[@]}"
     fi
     if (( ${#START_UNITS[@]} > 0 )); then
-        sudo systemctl --quiet start "${START_UNITS[@]}"
+        systemctl --quiet start "${START_UNITS[@]}"
     fi
 
     if (( ${#notes[@]} > 0 )); then
@@ -320,8 +335,8 @@ main () {
         report=$(build_report)
         printf '%s' "$report"
         if [[ -n $CREDS_FILE ]]; then
-            printf '%s' "$report" | sudo tee "$CREDS_FILE" >/dev/null
-            sudo chmod 600 "$CREDS_FILE"
+            printf '%s' "$report" > "$CREDS_FILE"
+            chmod 600 "$CREDS_FILE"
             printf '\nCredentials also written to: %s (mode 0600)\n' "$CREDS_FILE"
         fi
     elif [[ -n $CREDS_FILE ]]; then

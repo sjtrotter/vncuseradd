@@ -1,4 +1,4 @@
-% VNCUSERADD(8) vncuseradd 1.1.0
+% VNCUSERADD(8) vncuseradd 1.2.0
 % Stephen Trotter
 % August 2022
 
@@ -12,6 +12,8 @@ vncuseradd - add new LOGIN(s) with VNC capabilities
 **vncuseradd** utilizes the `newusers' utility to create LOGIN(s) in bulk (if they are not already created) and then assigns each LOGIN the next available VNC display number, starting from *:10*.
 
 **vncuseradd** expects TigerVNC to be installed on the system, with the user configuration file stored at **/etc/tigervnc/vncserver.users**.
+
+**vncuseradd** must run as root. If invoked as an unprivileged user, it re-executes itself once via `sudo' (prompting for a password if necessary) and then runs every privileged step in the same root shell. When invoked from automation that is already root (for example, Ansible with `become: true', or `sudo vncuseradd ...'), the re-exec is skipped to avoid a double escalation.
 
 For each LOGIN that does not already exist on the system, **vncuseradd** generates a random system password and immediately marks it expired, so the user is forced to choose a new one on first login. For each LOGIN that gets new VNC capability, **vncuseradd** also generates a random 8-character VNC password (the VNC protocol limits the effective key to 8 bytes).
 
