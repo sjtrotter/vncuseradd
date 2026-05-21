@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.2.0"
+readonly VERSION="1.3.0"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
@@ -12,7 +12,7 @@ readonly VNC_PORT_BASE=5900
 readonly SYS_PASS_LEN=20
 readonly VNC_PASS_LEN=8
 # Unambiguous alphabet: no 0/O/o, no 1/l/I, no special chars.
-# Safe inside newusers' colon-separated records and in shell pipelines.
+# Safe inside chpasswd's colon-separated records and in shell pipelines.
 readonly PASS_CHARSET='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
 readonly ANSI_RED='\033[1;31m'
 readonly ANSI_CLEAR='\033[0m'
@@ -27,22 +27,12 @@ ARGS=()
 CURRENT_SYS_USERS=()
 CURRENT_VNC_USERS=()
 CURRENT_VNC_DISPLAYS=()
-CHOWN_LIST=()
 ENABLE_UNITS=()
 START_UNITS=()
 REPORT_USERS=()
 declare -A USER_SYS_PASS=()
 declare -A USER_VNC_PASS=()
 declare -A USER_PORT=()
-USER_FILE=""
-
-cleanup () {
-    if [[ -n $USER_FILE && -e $USER_FILE ]]; then
-        rm -f "$USER_FILE"
-    fi
-    return 0
-}
-trap cleanup EXIT
 
 finish () {
     local rc="$1"
@@ -169,34 +159,16 @@ get_vncusers () {
     debug "found vnc users: ${CURRENT_VNC_USERS[*]:-}"
 }
 
-write_userfile () {
+create_user () {
     local user="$1"
     local pass="$2"
-    local userfile="$3"
-    debug "writing $user to $userfile"
-    printf '%s:%s:::%s:/home/%s:/bin/bash\n' "$user" "$pass" "$user" "$user" >> "$userfile"
-}
-
-create_home () {
-    local user="$1"
-    if [[ -d /home/$user ]]; then
-        debug "skipping $user's homedir, already there"
-        return
-    fi
-    debug "creating $user's homedir"
-    cp -r /etc/skel "/home/$user"
-}
-
-create_users () {
-    local userfile="$1"
-    debug "creating users from $userfile"
-    newusers "$userfile"
-}
-
-chown_home () {
-    local user="$1"
-    debug "chown $user's homedir"
-    chown -R "$user:$user" "/home/$user"
+    debug "creating user $user (useradd --create-home)"
+    useradd --create-home --shell /bin/bash --comment "$user" "$user"
+    debug "setting system password for $user via chpasswd"
+    # chpasswd reads "user:password" from stdin. Our PASS_CHARSET excludes
+    # colon, so the field split is unambiguous and the password never lands
+    # in argv or a temp file.
+    printf '%s:%s\n' "$user" "$pass" | chpasswd
 }
 
 expire_password () {
@@ -258,7 +230,7 @@ main () {
     # an error without an unnecessary sudo prompt.
     parse_args "$@"
 
-    # Everything below (newusers, chpasswd, systemctl, writing to
+    # Everything below (useradd, chpasswd, systemctl, writing to
     # $VNC_USER_CONFIG, su to other users) needs root. Re-exec once via
     # sudo instead of prefixing every call. When invoked from automation
     # that's already root (ansible become: true, or `sudo vncuseradd ...`),
@@ -272,9 +244,6 @@ main () {
     fi
 
     preflight_creds_file
-
-    USER_FILE=$(mktemp)
-    chmod 600 "$USER_FILE"
 
     get_sysusers
     get_vncusers
@@ -295,19 +264,10 @@ main () {
         fi
         pass=$(gen_password "$SYS_PASS_LEN")
         USER_SYS_PASS[$user]="$pass"
-        create_home "$user"
-        write_userfile "$user" "$pass" "$USER_FILE"
-        CHOWN_LIST+=("$user")
+        create_user "$user" "$pass"
+        expire_password "$user"
+        [[ -n $ADMIN ]] && set_admin "$user"
     done
-
-    if (( ${#CHOWN_LIST[@]} > 0 )); then
-        create_users "$USER_FILE"
-        for user in "${CHOWN_LIST[@]}"; do
-            chown_home "$user"
-            expire_password "$user"
-            [[ -n $ADMIN ]] && set_admin "$user"
-        done
-    fi
 
     local display vnc_pass
     local -a notes=()
