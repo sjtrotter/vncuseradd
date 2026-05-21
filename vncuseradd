@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
-readonly ERR_NO_PASSWD=67
-readonly USER_FILE="/tmp/newusers"
+readonly ERR_FILE_WRITE=68
 readonly VNC_USER_CONFIG="/etc/tigervnc/vncserver.users"
 readonly MIN_DISPLAY=10
 readonly VNC_PORT_BASE=5900
+readonly SYS_PASS_LEN=20
+readonly VNC_PASS_LEN=8
+# Unambiguous alphabet: no 0/O/o, no 1/l/I, no special chars.
+# Safe inside newusers' colon-separated records and in shell pipelines.
+readonly PASS_CHARSET='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
 readonly ANSI_RED='\033[1;31m'
 readonly ANSI_CLEAR='\033[0m'
 readonly ANSI_YELLOW='\033[1;93m'
 readonly PROG="${0##*/}"
 
 ADMIN=""
-PASSWORD=""
+CREDS_FILE=""
 START_SVC=""
 DEBUG=""
 ARGS=()
@@ -26,6 +30,19 @@ CURRENT_VNC_DISPLAYS=()
 CHOWN_LIST=()
 ENABLE_UNITS=()
 START_UNITS=()
+REPORT_USERS=()
+declare -A USER_SYS_PASS=()
+declare -A USER_VNC_PASS=()
+declare -A USER_PORT=()
+USER_FILE=""
+
+cleanup () {
+    if [[ -n $USER_FILE && -e $USER_FILE ]]; then
+        rm -f "$USER_FILE"
+    fi
+    return 0
+}
+trap cleanup EXIT
 
 finish () {
     local rc="$1"
@@ -42,9 +59,10 @@ usage () {
 
 $PROG  - add new LOGIN(s) with VNC capabilities
 * needs TigerVNC Server installed with config at ${VNC_USER_CONFIG}
-* VNC passwords are set to 'password' by default.
+* random passwords are generated and printed to stdout (system password is
+  expired on first login; rotate VNC password with vncpasswd)
 
-Usage: $PROG [OPTION] -p PASSWORD LOGIN [LOGIN]...
+Usage: $PROG [OPTION]... LOGIN [LOGIN]...
 
 Options:
 EOF
@@ -52,9 +70,9 @@ EOF
     cat <<'GENEOF'
   -a            make the LOGIN(s) an admin account (adds user(s) to wheel
                 group)
-  -p PASSWORD   Default password of the new user(s). For more than one LOGIN,
-                PASSWORD will apply to all. This input method is NOT SECURE -
-                have user(s) change ASAP with passwd
+  -o FILE       also write generated credentials to FILE (created with mode
+                0600). Without this flag, credentials are printed to stdout
+                only.
   -h            Display the help message.
   -s            Starts the VNC service(s) now (otherwise reboot or start
                 manually)
@@ -74,15 +92,24 @@ version () {
     printf '%s\n' "$VERSION"
 }
 
+gen_password () {
+    local len="$1"
+    local raw
+    # Read 16x bytes from /dev/urandom and filter to charset; head -c
+    # bounds the read so no SIGPIPE on tr under pipefail.
+    raw=$(LC_ALL=C tr -dc "$PASS_CHARSET" < <(head -c $((len * 16)) /dev/urandom))
+    printf '%s' "${raw:0:len}"
+}
+
 parse_args () {
-    local optstring=":ahp:svV"
+    local optstring=":aho:svV"
     local arg
     while [[ $OPTIND -le $# ]]; do
         if getopts "$optstring" arg; then
             case "$arg" in
                 a) ADMIN=1 ;;
                 h) usage; finish 0 ;;
-                p) PASSWORD="$OPTARG" ;;
+                o) CREDS_FILE="$OPTARG" ;;
                 s) START_SVC=1 ;;
                 v) DEBUG=1 ;;
                 V) version; finish 0 ;;
@@ -98,6 +125,19 @@ parse_args () {
     if (( ${#ARGS[@]} < 1 )); then
         finish "$ERR_NO_LOGIN" "no LOGIN given"
     fi
+}
+
+preflight_creds_file () {
+    [[ -z $CREDS_FILE ]] && return 0
+    local dir
+    dir=$(dirname -- "$CREDS_FILE")
+    if ! sudo test -d "$dir"; then
+        finish "$ERR_FILE_WRITE" "credentials file directory does not exist: $dir"
+    fi
+    if ! sudo touch "$CREDS_FILE" 2>/dev/null; then
+        finish "$ERR_FILE_WRITE" "cannot create credentials file: $CREDS_FILE"
+    fi
+    sudo chmod 600 "$CREDS_FILE"
 }
 
 get_sysusers () {
@@ -121,9 +161,10 @@ get_vncusers () {
 
 write_userfile () {
     local user="$1"
-    local userfile="$2"
+    local pass="$2"
+    local userfile="$3"
     debug "writing $user to $userfile"
-    printf '%s:%s:::%s:/home/%s:/bin/bash\n' "$user" "$PASSWORD" "$user" "$user" >> "$userfile"
+    printf '%s:%s:::%s:/home/%s:/bin/bash\n' "$user" "$pass" "$user" "$user" >> "$userfile"
 }
 
 create_home () {
@@ -140,7 +181,6 @@ create_users () {
     local userfile="$1"
     debug "creating users from $userfile"
     sudo newusers "$userfile"
-    sudo rm -f "$userfile"
 }
 
 chown_home () {
@@ -149,10 +189,17 @@ chown_home () {
     sudo chown -R "$user:$user" "/home/$user"
 }
 
+expire_password () {
+    local user="$1"
+    debug "expiring system password for $user (force reset on first login)"
+    sudo passwd --expire "$user" >/dev/null
+}
+
 set_vncpasswd () {
     local user="$1"
+    local pass="$2"
     debug "setting vncpasswd for $user..."
-    sudo su "$user" -c 'printf "password\npassword\n" | vncpasswd >/dev/null 2>&1'
+    printf '%s\n%s\n' "$pass" "$pass" | sudo -Hu "$user" vncpasswd >/dev/null 2>&1
 }
 
 write_vncconfig () {
@@ -177,10 +224,19 @@ next_free_display () {
     printf ':%s' "$n"
 }
 
-print_vnc_info () {
-    local user="$1"
-    local display="$2"
-    printf '%s - port %s\n' "$user" "$(( VNC_PORT_BASE + ${display#:} ))"
+build_report () {
+    local block user syspass vncpass port
+    block=$'\nGenerated credentials (shown once; system password is expired and must be changed on first login):\n\n'
+    block+=$(printf '  %-16s  %-20s  %-12s  %s\n' "LOGIN" "SYSTEM PASSWORD" "VNC PASSWORD" "VNC PORT")
+    block+=$'\n'
+    for user in "${REPORT_USERS[@]}"; do
+        syspass="${USER_SYS_PASS[$user]:--}"
+        vncpass="${USER_VNC_PASS[$user]:--}"
+        port="${USER_PORT[$user]:--}"
+        block+=$(printf '  %-16s  %-20s  %-12s  %s' "$user" "$syspass" "$vncpass" "$port")
+        block+=$'\n'
+    done
+    printf '%s' "$block"
 }
 
 main () {
@@ -189,6 +245,11 @@ main () {
     if [[ ! -f $VNC_USER_CONFIG ]]; then
         finish "$ERR_NO_VNCSRV" "tigervnc-server config not found"
     fi
+
+    preflight_creds_file
+
+    USER_FILE=$(mktemp)
+    chmod 600 "$USER_FILE"
 
     get_sysusers
     get_vncusers
@@ -201,17 +262,16 @@ main () {
     for u in "${CURRENT_VNC_USERS[@]:-}";   do [[ -n $u ]] && vnc_user_set[$u]=1; done
     for d in "${CURRENT_VNC_DISPLAYS[@]:-}"; do [[ -n $d ]] && vnc_display_set[$d]=1; done
 
-    local user
+    local user pass
     for user in "${ARGS[@]}"; do
         if [[ -n ${sys_user_set[$user]:-} ]]; then
             debug "skipping $user, already created"
             continue
         fi
-        if [[ -z $PASSWORD ]]; then
-            finish "$ERR_NO_PASSWD" "new user given with no PASSWORD"
-        fi
+        pass=$(gen_password "$SYS_PASS_LEN")
+        USER_SYS_PASS[$user]="$pass"
         create_home "$user"
-        write_userfile "$user" "$USER_FILE"
+        write_userfile "$user" "$pass" "$USER_FILE"
         CHOWN_LIST+=("$user")
     done
 
@@ -219,25 +279,29 @@ main () {
         create_users "$USER_FILE"
         for user in "${CHOWN_LIST[@]}"; do
             chown_home "$user"
+            expire_password "$user"
             [[ -n $ADMIN ]] && set_admin "$user"
         done
     fi
 
-    local -a vnc_status=()
-    local display
+    local display vnc_pass
+    local -a notes=()
     for user in "${ARGS[@]}"; do
         if [[ -n ${vnc_user_set[$user]:-} ]]; then
-            vnc_status+=("skipping $user, already in VNC config")
+            notes+=("$user: already in VNC config, skipped")
             continue
         fi
         display=$(next_free_display vnc_display_set)
         debug "assigning display $display to $user"
+        vnc_pass=$(gen_password "$VNC_PASS_LEN")
+        USER_VNC_PASS[$user]="$vnc_pass"
+        USER_PORT[$user]=$(( VNC_PORT_BASE + ${display#:} ))
         write_vncconfig "$user" "$display"
         vnc_display_set[$display]=1
-        set_vncpasswd "$user"
+        set_vncpasswd "$user" "$vnc_pass"
         ENABLE_UNITS+=("vncserver@${display}.service")
         [[ -n $START_SVC ]] && START_UNITS+=("vncserver@${display}.service")
-        vnc_status+=("$(print_vnc_info "$user" "$display")")
+        REPORT_USERS+=("$user")
     done
 
     if (( ${#ENABLE_UNITS[@]} > 0 )); then
@@ -247,7 +311,22 @@ main () {
         sudo systemctl --quiet start "${START_UNITS[@]}"
     fi
 
-    printf '%s\n' "${vnc_status[@]}"
+    if (( ${#notes[@]} > 0 )); then
+        printf '%s\n' "${notes[@]}"
+    fi
+
+    if (( ${#REPORT_USERS[@]} > 0 )); then
+        local report
+        report=$(build_report)
+        printf '%s' "$report"
+        if [[ -n $CREDS_FILE ]]; then
+            printf '%s' "$report" | sudo tee "$CREDS_FILE" >/dev/null
+            sudo chmod 600 "$CREDS_FILE"
+            printf '\nCredentials also written to: %s (mode 0600)\n' "$CREDS_FILE"
+        fi
+    elif [[ -n $CREDS_FILE ]]; then
+        printf 'No new credentials generated; %s left empty.\n' "$CREDS_FILE"
+    fi
 }
 
 if [[ ${0##*/} == "vncuseradd" ]]; then main "$@"; fi

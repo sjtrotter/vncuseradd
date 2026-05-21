@@ -1,4 +1,4 @@
-% VNCUSERADD(8) vncuseradd 1.0.0
+% VNCUSERADD(8) vncuseradd 1.1.0
 % Stephen Trotter
 % August 2022
 
@@ -6,24 +6,23 @@
 vncuseradd - add new LOGIN(s) with VNC capabilities
 
 # SYNOPSIS
-**vncuseradd** [*OPTION*] *LOGIN* [*LOGIN*]...\
-**vncuseradd** [*OPTION*] -p *PASSWORD* *LOGIN* [*LOGIN*]...
+**vncuseradd** [*OPTION*]... *LOGIN* [*LOGIN*]...
 
 # DESCRIPTION
 **vncuseradd** utilizes the `newusers' utility to create LOGIN(s) in bulk (if they are not already created) and then assigns each LOGIN the next available VNC display number, starting from *:10*.
 
 **vncuseradd** expects TigerVNC to be installed on the system, with the user configuration file stored at **/etc/tigervnc/vncserver.users**.
 
-If a user is not yet created on the system, the *-p PASSWORD* option is mandatory to set a default system password for the user(s). **THIS SHOULD BE CHANGED** by the user(s) immediately upon login with the `passwd' utility.
+For each LOGIN that does not already exist on the system, **vncuseradd** generates a random system password and immediately marks it expired, so the user is forced to choose a new one on first login. For each LOGIN that gets new VNC capability, **vncuseradd** also generates a random 8-character VNC password (the VNC protocol limits the effective key to 8 bytes).
 
-VNC users created with this utility will have their default password set to *password*. **THIS SHOULD BE CHANGED** by the user(s) immediately upon login with the `vncpasswd' utility.
+Generated credentials are printed to standard output at the end of the run. They are shown exactly once: capture them before they scroll out of view. Use *-o FILE* if you need a persistent record on disk.
 
 # OPTIONS
 **-a**
 : make the LOGIN(s) an admin account (adds user(s) to wheel group)
 
-**-p *PASSWORD***
-: Default password of the new user(s). For more than one *LOGIN*, *PASSWORD* will apply to all. This input method is **NOT SECURE** - have user(s) change ASAP with `passwd'
+**-o *FILE***
+: also write generated credentials to *FILE* (created with mode 0600). Without this flag, credentials are printed to stdout only.
 
 **-h**
 : Display the help message.
@@ -38,11 +37,23 @@ VNC users created with this utility will have their default password set to *pas
 : Display version.
 
 # EXAMPLES
-**vncuseradd -ap *password* *newuser***
-: Adds new user *newuser* with system password set to *password*, and VNC password set to *password*, and makes them an admin (adds to wheel group).
+**vncuseradd -a *newuser***
+: Creates new user *newuser* with a random expired system password and a random VNC password, and makes them an admin (adds to wheel group). Credentials are printed to stdout.
+
+**vncuseradd -s -o /root/vnc-creds.txt *alice* *bob***
+: Creates two users with random credentials, starts their VNC services immediately, and writes the credentials to */root/vnc-creds.txt* (mode 0600) in addition to printing to stdout.
 
 **vncuseradd -s *existuser1* *existuser2* *existuser3***
-: Adds VNC capability to existing users, and starts their services now. You can also use bash expansion in this case, like this: *existinguser{1..3}*
+: Adds VNC capability to existing system users (generating a random VNC password for each) and starts their services now. Bash expansion also works, e.g. *existuser{1..3}*.
+
+# SECURITY
+The system password is expired immediately with `passwd -e', so it is only valid for the very first login. After that, the user must set their own password.
+
+The VNC password is not expirable by the protocol. Users should rotate it on first connect with the `vncpasswd' utility. The VNC protocol truncates the password to an 8-byte key, so generated VNC passwords are 8 characters long.
+
+By default, credentials appear only on stdout, where they enter the terminal's scrollback and may be captured by terminal recorders (`script', `asciinema', tmux history). Treat the stdout output as sensitive. If you need a persistent record, pass *-o FILE* and protect or delete the file once the credentials have been distributed.
+
+Generated passwords use an alphabet that excludes visually ambiguous characters (*0/O*, *1/l/I*) to reduce transcription errors.
 
 # EXIT VALUES
 **0**
@@ -57,8 +68,8 @@ VNC users created with this utility will have their default password set to *pas
 **66**
 : No *LOGIN* given as a positional parameter.
 
-**67**
-: No *-p PASSWORD* given for user not in system yet.
+**68**
+: Could not write credentials file specified with *-o*.
 
 # BUGS
 - -a will not have an effect if the user is already created, or if they are created and the home directory was already present before running this utility; i.e. this script will only add users to wheel if they are created by it completely.
