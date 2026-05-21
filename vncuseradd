@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.3.2"
+readonly VERSION="1.3.3"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
@@ -28,6 +28,7 @@ CURRENT_VNC_USERS=()
 CURRENT_VNC_DISPLAYS=()
 ENABLE_UNITS=()
 START_UNITS=()
+DUPLICATE_LOGINS=()
 declare -A USER_SYS_PASS=()
 declare -A USER_VNC_PASS=()
 declare -A USER_PORT=()
@@ -130,10 +131,16 @@ parse_args () {
     # Dedupe LOGINs while preserving order. Without this, a duplicate
     # would re-trigger useradd (which fails because the user now exists)
     # and would also write the same login twice to vncserver.users.
+    # Record each duplicated LOGIN once so main() can surface a note.
     local -A seen=()
     local deduped=() arg
+    DUPLICATE_LOGINS=()
     for arg in "${ARGS[@]}"; do
-        [[ -n ${seen[$arg]:-} ]] && continue
+        if [[ -n ${seen[$arg]:-} ]]; then
+            (( seen[$arg] == 1 )) && DUPLICATE_LOGINS+=("$arg")
+            seen[$arg]=2
+            continue
+        fi
         seen[$arg]=1
         deduped+=("$arg")
     done
@@ -198,6 +205,11 @@ set_vncpasswd () {
     # "Password:"/"Verify:" prompts there even with stdin piped) and only
     # surface it if the call actually fails.
     if ! err=$(printf '%s\n%s\n' "$pass" "$pass" | runuser -u "$user" -- vncpasswd 2>&1 >/dev/null); then
+        # vncpasswd may emit multi-line output ("Password:" / "Verify:" prompts
+        # plus the actual error). Collapse to one line so finish()'s
+        # "PROG: <msg>" convention isn't broken with stray blank lines.
+        while [[ $err == *$'\n' ]]; do err="${err%$'\n'}"; done
+        err="${err//$'\n'/ | }"
         finish 1 "vncpasswd failed for $user: $err"
     fi
 }
@@ -257,12 +269,9 @@ main () {
 
     preflight_creds_file
 
-    # Snapshot vncserver.users once: vnc_display_set is needed by
-    # next_free_display to scan for the lowest free slot, and
-    # vnc_user_set is a free byproduct of the same read. Both are
-    # updated in-loop as we assign so the second iteration sees the
-    # first iteration's writes. User existence is checked live with
-    # `id` instead of a /etc/passwd snapshot.
+    # Snapshot vncserver.users once; both sets are updated in-loop as we
+    # assign so later iterations see earlier writes. (User existence is
+    # checked live via `user_exists`, no /etc/passwd snapshot needed.)
     get_vncusers
     declare -A vnc_user_set=()
     declare -A vnc_display_set=()
@@ -283,8 +292,11 @@ main () {
         [[ -n $ADMIN ]] && set_admin "$user"
     done
 
-    local display vnc_pass
+    local display vnc_pass dup
     local -a notes=()
+    for dup in "${DUPLICATE_LOGINS[@]:-}"; do
+        [[ -n $dup ]] && notes+=("$dup: duplicate LOGIN on command line, collapsed")
+    done
     for user in "${ARGS[@]}"; do
         if [[ -n ${vnc_user_set[$user]:-} ]]; then
             notes+=("$user: already in VNC config, skipped")
