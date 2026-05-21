@@ -24,7 +24,6 @@ CREDS_FILE=""
 START_SVC=""
 DEBUG=""
 ARGS=()
-CURRENT_SYS_USERS=()
 CURRENT_VNC_USERS=()
 CURRENT_VNC_DISPLAYS=()
 ENABLE_UNITS=()
@@ -154,10 +153,8 @@ preflight_creds_file () {
     fi
 }
 
-get_sysusers () {
-    debug "getting system user list..."
-    mapfile -t CURRENT_SYS_USERS < <(getent passwd | cut -d: -f1)
-    debug "found system users: ${CURRENT_SYS_USERS[*]}"
+user_exists () {
+    id -- "$1" >/dev/null 2>&1
 }
 
 get_vncusers () {
@@ -260,21 +257,23 @@ main () {
 
     preflight_creds_file
 
-    get_sysusers
+    # Snapshot vncserver.users once: vnc_display_set is needed by
+    # next_free_display to scan for the lowest free slot, and
+    # vnc_user_set is a free byproduct of the same read. Both are
+    # updated in-loop as we assign so the second iteration sees the
+    # first iteration's writes. User existence is checked live with
+    # `id` instead of a /etc/passwd snapshot.
     get_vncusers
-
-    declare -A sys_user_set=()
     declare -A vnc_user_set=()
     declare -A vnc_display_set=()
     local u d
-    for u in "${CURRENT_SYS_USERS[@]}"; do sys_user_set[$u]=1; done
     for u in "${CURRENT_VNC_USERS[@]:-}";   do [[ -n $u ]] && vnc_user_set[$u]=1; done
     for d in "${CURRENT_VNC_DISPLAYS[@]:-}"; do [[ -n $d ]] && vnc_display_set[$d]=1; done
 
     local user pass
     for user in "${ARGS[@]}"; do
-        if [[ -n ${sys_user_set[$user]:-} ]]; then
-            debug "skipping $user, already created"
+        if user_exists "$user"; then
+            debug "skipping $user, already exists on system"
             continue
         fi
         pass=$(gen_password "$SYS_PASS_LEN")
@@ -297,6 +296,7 @@ main () {
         USER_VNC_PASS[$user]="$vnc_pass"
         USER_PORT[$user]=$(( VNC_PORT_BASE + ${display#:} ))
         write_vncconfig "$user" "$display"
+        vnc_user_set[$user]=1
         vnc_display_set[$display]=1
         set_vncpasswd "$user" "$vnc_pass"
         ENABLE_UNITS+=("vncserver@${display}.service")
