@@ -27,12 +27,9 @@ readonly README=README.md
 
 die () { echo "build: $*" >&2; exit 1; }
 
-# ---------------------------------------------------------------------------
-# 1. Regenerate the gzipped manpage.
-# gzip -n is REQUIRED: without it the archive embeds the source filename
-# and mtime, producing a different .gz on every run, which would defeat
-# the drift detection in CI.
-# ---------------------------------------------------------------------------
+# gzip -n is required: without it the archive embeds the source filename
+# and mtime, producing a different .gz on every run, which defeats CI
+# drift detection.
 if command -v pandoc >/dev/null 2>&1; then
     echo "build: regenerating $GZ"
     pandoc -s -t man "$SRC" | gzip -n > "$GZ"
@@ -41,12 +38,7 @@ else
     echo "build: install pandoc to regenerate the manpage locally" >&2
 fi
 
-# ---------------------------------------------------------------------------
-# 2. Markup stripper. Strips manpage formatting:
-#   **bold**  -> bold
-#   *italic*  -> italic
-#   `word'    -> word   (groff-style display quote)
-# ---------------------------------------------------------------------------
+# Strip manpage formatting: **bold**, *italic*, `groff-display'.
 strip_markup () {
     sed -E "
         s/\\*\\*//g
@@ -56,10 +48,7 @@ strip_markup () {
     "
 }
 
-# ---------------------------------------------------------------------------
-# 3. Generic section extractor: prints all non-blank lines between
-# "# <SECTION>" and the next "# " header, with markup stripped.
-# ---------------------------------------------------------------------------
+# Print non-blank lines between "# <SECTION>" and the next "# " header.
 extract_section () {
     local section="$1"
     awk -v sect="# $section" '
@@ -69,21 +58,13 @@ extract_section () {
     ' "$SRC" | strip_markup
 }
 
-# ---------------------------------------------------------------------------
-# 4. OPTIONS: render as a plaintext two-column table (spec | wrapped desc).
-# ---------------------------------------------------------------------------
+# Pair the (spec, description) rows that extract_section emits as adjacent
+# lines ("-x[ ARG]" then ": description...").
 extract_options () {
-    awk '
-        /^# OPTIONS/ { in_opts = 1; next }
-        /^# /        { in_opts = 0 }
-        !in_opts     { next }
-        /^\*\*-/ {
-            spec = $0
-            getline desc
-            sub(/^: /, "", desc)
-            print spec "\t" desc
-        }
-    ' "$SRC" | strip_markup
+    extract_section OPTIONS | awk '
+        /^-/  { spec = $0; next }
+        /^: / { sub(/^: /, ""); print spec "\t" $0 }
+    '
 }
 
 format_options () {
@@ -102,9 +83,6 @@ format_options () {
     done
 }
 
-# ---------------------------------------------------------------------------
-# 5. Extract each block.
-# ---------------------------------------------------------------------------
 NAME_LINE=$(extract_section NAME | head -n 1)
 [[ -n $NAME_LINE ]] || die "no NAME extracted from $SRC; check that # NAME section exists"
 
@@ -114,9 +92,6 @@ SYNOPSIS_BLOCK=$(extract_section SYNOPSIS)
 OPTIONS_BLOCK=$(extract_options | format_options)
 [[ -n $OPTIONS_BLOCK ]] || die "no options extracted from $SRC; check that # OPTIONS section exists"
 
-# ---------------------------------------------------------------------------
-# 6. Inject between markers in a target file.
-# ---------------------------------------------------------------------------
 inject () {
     local file="$1" begin="$2" end="$3" body="$4"
     grep -qF "$begin" "$file" || die "$file is missing marker: $begin"
@@ -135,26 +110,19 @@ inject () {
         line == end   { in_block = 0; print; next }
         !in_block     { print }
     ' "$file" > "$tmp"
-    # cat-and-rm preserves the target file's mode bits (mv would clobber
-    # them with mktemp's default 0600).
-    cat "$tmp" > "$file"
-    rm -f "$tmp"
+    # Atomic replace; chmod --reference preserves target's mode bits
+    # (otherwise mv would clobber them with mktemp's default 0600 and
+    # the script would lose its executable bit).
+    chmod --reference="$file" "$tmp"
+    mv "$tmp" "$file"
 }
 
-# ---------------------------------------------------------------------------
-# 7. Render per-target bodies.
-#
-# Script bodies are wrapped in a quoted heredoc so the script's usage()
-# function can cat them verbatim. README bodies are markdown:
-#   NAME      - h1 title + tagline (split at the " - " separator)
-#   SYNOPSIS  - fenced code block
-#   OPTIONS   - fenced code block
-# ---------------------------------------------------------------------------
+# Script bodies are wrapped in a quoted heredoc so usage() can cat them
+# verbatim. README bodies are markdown.
 heredoc () {
     printf "    cat <<'GENEOF'\n%s\nGENEOF" "$1"
 }
 
-# Split "vncuseradd - tagline" into title and tagline for the README header.
 NAME_TITLE=${NAME_LINE%% - *}
 NAME_TAGLINE=${NAME_LINE#* - }
 
@@ -166,9 +134,6 @@ SCRIPT_NAME=$(heredoc "$NAME_LINE")
 SCRIPT_SYNOPSIS=$(heredoc "Usage: $SYNOPSIS_BLOCK")
 SCRIPT_OPTIONS=$(heredoc "$OPTIONS_BLOCK")
 
-# ---------------------------------------------------------------------------
-# 8. Inject.
-# ---------------------------------------------------------------------------
 echo "build: syncing $README"
 inject "$README" '<!-- BEGIN GENERATED:NAME -->'     '<!-- END GENERATED:NAME -->'     "$README_NAME"
 inject "$README" '<!-- BEGIN GENERATED:SYNOPSIS -->' '<!-- END GENERATED:SYNOPSIS -->' "$README_SYNOPSIS"
