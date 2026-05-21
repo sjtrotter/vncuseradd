@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.3.1"
+readonly VERSION="1.3.2"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
@@ -24,7 +24,6 @@ CREDS_FILE=""
 START_SVC=""
 DEBUG=""
 ARGS=()
-CURRENT_SYS_USERS=()
 CURRENT_VNC_USERS=()
 CURRENT_VNC_DISPLAYS=()
 ENABLE_UNITS=()
@@ -127,6 +126,18 @@ parse_args () {
     if (( ${#ARGS[@]} < 1 )); then
         finish "$ERR_NO_LOGIN" "no LOGIN given"
     fi
+
+    # Dedupe LOGINs while preserving order. Without this, a duplicate
+    # would re-trigger useradd (which fails because the user now exists)
+    # and would also write the same login twice to vncserver.users.
+    local -A seen=()
+    local deduped=() arg
+    for arg in "${ARGS[@]}"; do
+        [[ -n ${seen[$arg]:-} ]] && continue
+        seen[$arg]=1
+        deduped+=("$arg")
+    done
+    ARGS=("${deduped[@]}")
 }
 
 preflight_creds_file () {
@@ -142,10 +153,8 @@ preflight_creds_file () {
     fi
 }
 
-get_sysusers () {
-    debug "getting system user list..."
-    mapfile -t CURRENT_SYS_USERS < <(getent passwd | cut -d: -f1)
-    debug "found system users: ${CURRENT_SYS_USERS[*]}"
+user_exists () {
+    id -- "$1" >/dev/null 2>&1
 }
 
 get_vncusers () {
@@ -182,11 +191,15 @@ expire_password () {
 set_vncpasswd () {
     local user="$1"
     local pass="$2"
+    local err
     debug "setting vncpasswd for $user..."
-    # runuser bypasses PAM auth/account checks (su would refuse here because
-    # we just expired the user's password). HOME is set from passwd entry.
-    # Password on stdin (vncpasswd reads it twice for confirmation).
-    printf '%s\n%s\n' "$pass" "$pass" | runuser -u "$user" -- vncpasswd >/dev/null
+    # runuser bypasses PAM (su would refuse on the just-expired account).
+    # HOME is set from passwd entry. Capture vncpasswd's stderr (it writes
+    # "Password:"/"Verify:" prompts there even with stdin piped) and only
+    # surface it if the call actually fails.
+    if ! err=$(printf '%s\n%s\n' "$pass" "$pass" | runuser -u "$user" -- vncpasswd 2>&1 >/dev/null); then
+        finish 1 "vncpasswd failed for $user: $err"
+    fi
 }
 
 write_vncconfig () {
@@ -244,21 +257,23 @@ main () {
 
     preflight_creds_file
 
-    get_sysusers
+    # Snapshot vncserver.users once: vnc_display_set is needed by
+    # next_free_display to scan for the lowest free slot, and
+    # vnc_user_set is a free byproduct of the same read. Both are
+    # updated in-loop as we assign so the second iteration sees the
+    # first iteration's writes. User existence is checked live with
+    # `id` instead of a /etc/passwd snapshot.
     get_vncusers
-
-    declare -A sys_user_set=()
     declare -A vnc_user_set=()
     declare -A vnc_display_set=()
     local u d
-    for u in "${CURRENT_SYS_USERS[@]}"; do sys_user_set[$u]=1; done
     for u in "${CURRENT_VNC_USERS[@]:-}";   do [[ -n $u ]] && vnc_user_set[$u]=1; done
     for d in "${CURRENT_VNC_DISPLAYS[@]:-}"; do [[ -n $d ]] && vnc_display_set[$d]=1; done
 
     local user pass
     for user in "${ARGS[@]}"; do
-        if [[ -n ${sys_user_set[$user]:-} ]]; then
-            debug "skipping $user, already created"
+        if user_exists "$user"; then
+            debug "skipping $user, already exists on system"
             continue
         fi
         pass=$(gen_password "$SYS_PASS_LEN")
@@ -281,6 +296,7 @@ main () {
         USER_VNC_PASS[$user]="$vnc_pass"
         USER_PORT[$user]=$(( VNC_PORT_BASE + ${display#:} ))
         write_vncconfig "$user" "$display"
+        vnc_user_set[$user]=1
         vnc_display_set[$display]=1
         set_vncpasswd "$user" "$vnc_pass"
         ENABLE_UNITS+=("vncserver@${display}.service")

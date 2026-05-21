@@ -98,7 +98,9 @@ inject () {
     grep -qF "$end"   "$file" || die "$file is missing marker: $end"
 
     local tmp
-    tmp=$(mktemp)
+    # mktemp -p ensures the temp file is on the same filesystem as the
+    # target so `mv` is a real atomic rename (not a copy+unlink fallback).
+    tmp=$(mktemp -p "$(dirname -- "$file")")
     awk -v begin="$begin" -v end="$end" -v body="$body" '
         function trim(s) {
             sub(/^[[:space:]]+/, "", s)
