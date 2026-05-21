@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Regenerate vncuseradd.8.gz from vncuseradd.8.md and sync the OPTIONS
-# block into README.md and the usage() function in vncuseradd.
+# Regenerate vncuseradd.8.gz from vncuseradd.8.md and sync three blocks
+# (NAME, SYNOPSIS, OPTIONS) into README.md and the usage() function in
+# vncuseradd.
 #
 # Source of truth: vncuseradd.8.md
 # Generated:       vncuseradd.8.gz
-#                  the block between BEGIN/END GENERATED:OPTIONS markers
+#                  the blocks between BEGIN/END GENERATED:<SECTION> markers
 #                  in README.md and vncuseradd
+#
+# Sections wired up:
+#   NAME      - "vncuseradd - tagline"        (from # NAME)
+#   SYNOPSIS  - "vncuseradd [OPTION]... ..."  (from # SYNOPSIS, markup stripped)
+#   OPTIONS   - the option table              (from # OPTIONS)
 #
 # Run with no args. Exits 0 on success (whether or not anything changed).
 
@@ -18,10 +24,6 @@ readonly SRC=vncuseradd.8.md
 readonly GZ=vncuseradd.8.gz
 readonly SCRIPT=vncuseradd
 readonly README=README.md
-readonly MARKER_BEGIN_SH='# BEGIN GENERATED:OPTIONS'
-readonly MARKER_END_SH='# END GENERATED:OPTIONS'
-readonly MARKER_BEGIN_MD='<!-- BEGIN GENERATED:OPTIONS -->'
-readonly MARKER_END_MD='<!-- END GENERATED:OPTIONS -->'
 
 die () { echo "build: $*" >&2; exit 1; }
 
@@ -40,15 +42,37 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Extract the OPTIONS section from the manpage source and render it as
-# plaintext (`-x[ ARG]   description...`, wrapped at column 16 continuation).
+# 2. Markup stripper. Strips manpage formatting:
+#   **bold**  -> bold
+#   *italic*  -> italic
+#   `word'    -> word   (groff-style display quote)
+# ---------------------------------------------------------------------------
+strip_markup () {
+    sed -E "
+        s/\\*\\*//g
+        s/\\*//g
+        s/\`([^\`]+)'/\1/g
+        s/\`//g
+    "
+}
+
+# ---------------------------------------------------------------------------
+# 3. Generic section extractor: prints all non-blank lines between
+# "# <SECTION>" and the next "# " header, with markup stripped.
+# ---------------------------------------------------------------------------
+extract_section () {
+    local section="$1"
+    awk -v sect="# $section" '
+        $0 == sect    { in_sect = 1; next }
+        /^# /         { in_sect = 0 }
+        in_sect && NF { print }
+    ' "$SRC" | strip_markup
+}
+
+# ---------------------------------------------------------------------------
+# 4. OPTIONS: render as a plaintext two-column table (spec | wrapped desc).
 # ---------------------------------------------------------------------------
 extract_options () {
-    # Awk extracts each option spec line and its following description into
-    # one tab-separated record. Sed then strips manpage formatting:
-    #   **bold**  -> bold
-    #   *italic*  -> italic
-    #   `word'    -> word   (groff-style display quote)
     awk '
         /^# OPTIONS/ { in_opts = 1; next }
         /^# /        { in_opts = 0 }
@@ -59,12 +83,7 @@ extract_options () {
             sub(/^: /, "", desc)
             print spec "\t" desc
         }
-    ' "$SRC" | sed -E "
-        s/\\*\\*//g
-        s/\\*//g
-        s/\`([^\`]+)'/\1/g
-        s/\`//g
-    "
+    ' "$SRC" | strip_markup
 }
 
 format_options () {
@@ -83,11 +102,20 @@ format_options () {
     done
 }
 
+# ---------------------------------------------------------------------------
+# 5. Extract each block.
+# ---------------------------------------------------------------------------
+NAME_LINE=$(extract_section NAME | head -n 1)
+[[ -n $NAME_LINE ]] || die "no NAME extracted from $SRC; check that # NAME section exists"
+
+SYNOPSIS_BLOCK=$(extract_section SYNOPSIS)
+[[ -n $SYNOPSIS_BLOCK ]] || die "no SYNOPSIS extracted from $SRC; check that # SYNOPSIS section exists"
+
 OPTIONS_BLOCK=$(extract_options | format_options)
 [[ -n $OPTIONS_BLOCK ]] || die "no options extracted from $SRC; check that # OPTIONS section exists"
 
 # ---------------------------------------------------------------------------
-# 3. Inject between markers in a target file.
+# 6. Inject between markers in a target file.
 # ---------------------------------------------------------------------------
 inject () {
     local file="$1" begin="$2" end="$3" body="$4"
@@ -113,13 +141,42 @@ inject () {
     rm -f "$tmp"
 }
 
-README_BODY=$(printf '```\n%s\n```' "$OPTIONS_BLOCK")
-SCRIPT_BODY=$(printf "    cat <<'GENEOF'\n%s\nGENEOF" "$OPTIONS_BLOCK")
+# ---------------------------------------------------------------------------
+# 7. Render per-target bodies.
+#
+# Script bodies are wrapped in a quoted heredoc so the script's usage()
+# function can cat them verbatim. README bodies are markdown:
+#   NAME      - h1 title + tagline (split at the " - " separator)
+#   SYNOPSIS  - fenced code block
+#   OPTIONS   - fenced code block
+# ---------------------------------------------------------------------------
+heredoc () {
+    printf "    cat <<'GENEOF'\n%s\nGENEOF" "$1"
+}
 
+# Split "vncuseradd - tagline" into title and tagline for the README header.
+NAME_TITLE=${NAME_LINE%% - *}
+NAME_TAGLINE=${NAME_LINE#* - }
+
+README_NAME=$(printf '# %s\n%s' "$NAME_TITLE" "$NAME_TAGLINE")
+README_SYNOPSIS=$(printf '```\n%s\n```' "$SYNOPSIS_BLOCK")
+README_OPTIONS=$(printf '```\n%s\n```' "$OPTIONS_BLOCK")
+
+SCRIPT_NAME=$(heredoc "$NAME_LINE")
+SCRIPT_SYNOPSIS=$(heredoc "Usage: $SYNOPSIS_BLOCK")
+SCRIPT_OPTIONS=$(heredoc "$OPTIONS_BLOCK")
+
+# ---------------------------------------------------------------------------
+# 8. Inject.
+# ---------------------------------------------------------------------------
 echo "build: syncing $README"
-inject "$README" "$MARKER_BEGIN_MD" "$MARKER_END_MD" "$README_BODY"
+inject "$README" '<!-- BEGIN GENERATED:NAME -->'     '<!-- END GENERATED:NAME -->'     "$README_NAME"
+inject "$README" '<!-- BEGIN GENERATED:SYNOPSIS -->' '<!-- END GENERATED:SYNOPSIS -->' "$README_SYNOPSIS"
+inject "$README" '<!-- BEGIN GENERATED:OPTIONS -->'  '<!-- END GENERATED:OPTIONS -->'  "$README_OPTIONS"
 
 echo "build: syncing $SCRIPT"
-inject "$SCRIPT" "$MARKER_BEGIN_SH" "$MARKER_END_SH" "$SCRIPT_BODY"
+inject "$SCRIPT" '# BEGIN GENERATED:NAME'     '# END GENERATED:NAME'     "$SCRIPT_NAME"
+inject "$SCRIPT" '# BEGIN GENERATED:SYNOPSIS' '# END GENERATED:SYNOPSIS' "$SCRIPT_SYNOPSIS"
+inject "$SCRIPT" '# BEGIN GENERATED:OPTIONS'  '# END GENERATED:OPTIONS'  "$SCRIPT_OPTIONS"
 
 echo "build: done"

@@ -55,14 +55,24 @@ finish () {
 }
 
 usage () {
+    echo
+    # BEGIN GENERATED:NAME
+    cat <<'GENEOF'
+vncuseradd - add new LOGIN(s) with VNC capabilities
+GENEOF
+    # END GENERATED:NAME
     cat <<EOF
-
-$PROG  - add new LOGIN(s) with VNC capabilities
 * needs TigerVNC Server installed with config at ${VNC_USER_CONFIG}
 * random passwords are generated and printed to stdout (system password is
   expired on first login; rotate VNC password with vncpasswd)
 
-Usage: $PROG [OPTION]... LOGIN [LOGIN]...
+EOF
+    # BEGIN GENERATED:SYNOPSIS
+    cat <<'GENEOF'
+Usage: vncuseradd [OPTION]... LOGIN [LOGIN]...
+GENEOF
+    # END GENERATED:SYNOPSIS
+    cat <<'EOF'
 
 Options:
 EOF
