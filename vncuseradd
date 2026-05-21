@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VERSION="1.3.1"
+readonly VERSION="1.3.2"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
@@ -127,6 +127,18 @@ parse_args () {
     if (( ${#ARGS[@]} < 1 )); then
         finish "$ERR_NO_LOGIN" "no LOGIN given"
     fi
+
+    # Dedupe LOGINs while preserving order. Without this, a duplicate
+    # would re-trigger useradd (which fails because the user now exists)
+    # and would also write the same login twice to vncserver.users.
+    local -A seen=()
+    local deduped=() arg
+    for arg in "${ARGS[@]}"; do
+        [[ -n ${seen[$arg]:-} ]] && continue
+        seen[$arg]=1
+        deduped+=("$arg")
+    done
+    ARGS=("${deduped[@]}")
 }
 
 preflight_creds_file () {
@@ -182,11 +194,15 @@ expire_password () {
 set_vncpasswd () {
     local user="$1"
     local pass="$2"
+    local err
     debug "setting vncpasswd for $user..."
-    # runuser bypasses PAM auth/account checks (su would refuse here because
-    # we just expired the user's password). HOME is set from passwd entry.
-    # Password on stdin (vncpasswd reads it twice for confirmation).
-    printf '%s\n%s\n' "$pass" "$pass" | runuser -u "$user" -- vncpasswd >/dev/null
+    # runuser bypasses PAM (su would refuse on the just-expired account).
+    # HOME is set from passwd entry. Capture vncpasswd's stderr (it writes
+    # "Password:"/"Verify:" prompts there even with stdin piped) and only
+    # surface it if the call actually fails.
+    if ! err=$(printf '%s\n%s\n' "$pass" "$pass" | runuser -u "$user" -- vncpasswd 2>&1 >/dev/null); then
+        finish 1 "vncpasswd failed for $user: $err"
+    fi
 }
 
 write_vncconfig () {

@@ -1,4 +1,4 @@
-% VNCUSERADD(8) vncuseradd 1.3.1
+% VNCUSERADD(8) vncuseradd 1.3.2
 % Stephen Trotter
 % August 2022
 
