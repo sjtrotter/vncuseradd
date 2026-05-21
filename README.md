@@ -19,6 +19,7 @@ Options:
   -h            display this help message and exit
   -s            starts the services now (otherwise reboot or start manually)
   -v            turn on debug mode
+  -V            display version
   ```
   
 # TODO

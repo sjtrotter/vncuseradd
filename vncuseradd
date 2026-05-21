@@ -1,272 +1,253 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 readonly VERSION="1.0.0"
 readonly ERR_NO_VNCSRV=64
 readonly ERR_UNK_OPT=65
 readonly ERR_NO_LOGIN=66
 readonly ERR_NO_PASSWD=67
+readonly ERR_DISPLAY_COLLISION=68
 readonly USER_FILE="/tmp/newusers"
 readonly VNC_USER_CONFIG="/etc/tigervnc/vncserver.users"
-readonly ANSI_RED="\033[1;31m"
-readonly ANSI_CLEAR="\033[0m"
-readonly ANSI_YELLOW="\033[1;93m"
+readonly DISPLAY_OFFSET=10
+readonly VNC_PORT_BASE=5900
+readonly ANSI_RED='\033[1;31m'
+readonly ANSI_CLEAR='\033[0m'
+readonly ANSI_YELLOW='\033[1;93m'
+readonly PROG="${0##*/}"
 
-unset ADMIN
-unset PASSWORD
-unset START_SVC
-unset DEBUG
+ADMIN=""
+PASSWORD=""
+START_SVC=""
+DEBUG=""
 ARGS=()
 CURRENT_SYS_USERS=()
 CURRENT_VNC_USERS=()
+CURRENT_VNC_DISPLAYS=()
 CHOWN_LIST=()
+ENABLE_UNITS=()
+START_UNITS=()
 
 finish () {
     local rc="$1"
-    local msg="$2"
-    if [[ $rc -gt 0 ]]; then
-        printf "${ANSI_RED}%s: %s${ANSI_CLEAR}\n" "$(basename $0)" "${msg}"
-        printf "Try: $(basename $0) -h\n"
+    local msg="${2:-}"
+    if (( rc > 0 )); then
+        printf "${ANSI_RED}%s: %s${ANSI_CLEAR}\n" "$PROG" "$msg" >&2
+        printf 'Try: %s -h\n' "$PROG" >&2
     fi
-    exit ${rc}
-} >&2
+    exit "$rc"
+}
 
 usage () {
-    printf "\n\
-$(basename $0)  - add new LOGIN(s) with VNC capabilities\n\
-* needs TigerVNC Server installed with config at ${VNC_USER_CONFIG}\n\
-* VNC passwords are set to 'password' by default.\n\
-\n\
-Usage: vncuseradd [OPTION] -p PASSWORD LOGIN [LOGIN]...\n\
-\n\
-Options:\n\
-  -a            make the LOGIN(s) an admin account\n\
-  -p PASSWORD   system password (not VNC) of the new account\n\
-                for more than one LOGIN, PASSWORD will apply to all. \n\
-                this input method is *NOT SECURE*. have user change ASAP.\n\
-  -h            display this help message and exit \n\
-  -s            starts the services now (otherwise reboot or start manually)\n\
-  -v            turn on debug mode\n\
+    cat <<EOF
+
+$PROG  - add new LOGIN(s) with VNC capabilities
+* needs TigerVNC Server installed with config at ${VNC_USER_CONFIG}
+* VNC passwords are set to 'password' by default.
+
+Usage: $PROG [OPTION] -p PASSWORD LOGIN [LOGIN]...
+
+Options:
+  -a            make the LOGIN(s) an admin account
+  -p PASSWORD   system password (not VNC) of the new account
+                for more than one LOGIN, PASSWORD will apply to all.
+                this input method is *NOT SECURE*. have user change ASAP.
+  -h            display this help message and exit
+  -s            starts the services now (otherwise reboot or start manually)
+  -v            turn on debug mode
   -V            display version
-\n"
+
+EOF
+}
+
+debug () {
+    [[ -n $DEBUG ]] || return 0
+    printf "${ANSI_YELLOW}[-]${ANSI_CLEAR} %s\n" "$1" >&2
+}
+
+version () {
+    printf '%s\n' "$VERSION"
 }
 
 parse_args () {
-    optstring=":ahp:svV"
-
-    while [[ $OPTIND -le "$#" ]]; do
-        if getopts ${optstring} arg; then
-            case ${arg} in
-                a) ADMIN=yes ;;
-                h) usage; finish 0 "" ;;
-                p) PASSWORD="${OPTARG}" ;;
-                s) START_SVC=yes ;;
-                v) DEBUG=yes ;;
-                V) version; finish 0 "" ;;
-                ?) finish "${ERR_UNK_OPT}" "unkown option: -${OPTARG}";;
+    local optstring=":ahp:svV"
+    local arg
+    while [[ $OPTIND -le $# ]]; do
+        if getopts "$optstring" arg; then
+            case "$arg" in
+                a) ADMIN=1 ;;
+                h) usage; finish 0 ;;
+                p) PASSWORD="$OPTARG" ;;
+                s) START_SVC=1 ;;
+                v) DEBUG=1 ;;
+                V) version; finish 0 ;;
+                :) finish "$ERR_UNK_OPT" "option -$OPTARG requires an argument" ;;
+                ?) finish "$ERR_UNK_OPT" "unknown option: -$OPTARG" ;;
             esac
         else
             ARGS+=("${!OPTIND}")
-            ((OPTIND++))
+            OPTIND=$((OPTIND + 1))
         fi
     done
 
-    if [[ ${#ARGS[@]} -lt 1  ]]; then
-        finish $ERR_NO_LOGIN "no LOGIN given"
+    if (( ${#ARGS[@]} < 1 )); then
+        finish "$ERR_NO_LOGIN" "no LOGIN given"
     fi
+}
+
+get_sysusers () {
+    debug "getting system user list..."
+    mapfile -t CURRENT_SYS_USERS < <(getent passwd | cut -d: -f1)
+    debug "found system users: ${CURRENT_SYS_USERS[*]}"
+}
+
+get_vncusers () {
+    debug "getting VNC user list..."
+    CURRENT_VNC_USERS=()
+    CURRENT_VNC_DISPLAYS=()
+    local line
+    while IFS= read -r line; do
+        [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+        CURRENT_VNC_DISPLAYS+=("${line%%=*}")
+        CURRENT_VNC_USERS+=("${line#*=}")
+    done < "$VNC_USER_CONFIG"
+    debug "found vnc users: ${CURRENT_VNC_USERS[*]:-}"
 }
 
 write_userfile () {
     local user="$1"
     local userfile="$2"
     debug "writing $user to $userfile"
-    if [[ ! -f ${userfile} ]]; then touch ${userfile}; fi
-    printf "$user:$PASSWORD:::$user:/home/$user:/bin/bash\n" >> "${userfile}"
+    printf '%s:%s:::%s:/home/%s:/bin/bash\n' "$user" "$PASSWORD" "$user" "$user" >> "$userfile"
 }
 
 create_home () {
     local user="$1"
-    if [[ ! -d /home/${user} ]]; then
-        debug "creating $user's homedir"
-        sudo cp -r /etc/skel /home/$user
-    else
+    if [[ -d /home/$user ]]; then
         debug "skipping $user's homedir, already there"
+        return
     fi
+    debug "creating $user's homedir"
+    sudo cp -r /etc/skel "/home/$user"
 }
 
 create_users () {
     local userfile="$1"
-    debug "creating users from ${userfile}"
-    sudo newusers "${userfile}"
-    rm -rf "${userfile}"
+    debug "creating users from $userfile"
+    sudo newusers "$userfile"
+    sudo rm -f "$userfile"
 }
 
 chown_home () {
     local user="$1"
     debug "chown $user's homedir"
-    sudo chown -R $user:$user /home/$user
+    sudo chown -R "$user:$user" "/home/$user"
 }
 
 set_vncpasswd () {
     local user="$1"
     debug "setting vncpasswd for $user..."
-    sudo su $user -c 'printf "password\npassword\n" | vncpasswd 2>&1>/dev/null' >/dev/null
+    sudo su "$user" -c 'printf "password\npassword\n" | vncpasswd >/dev/null 2>&1'
 }
 
 write_vncconfig () {
     local user="$1"
     local display="$2"
     debug "writing vnc config for $user on display $display"
-    printf "${display}=${user}\n" | sudo tee -a "${VNC_USER_CONFIG}" > /dev/null
-}
-
-vnc_svc_copy () {
-    # format: ":##"
-    # NOT currently used.
-    local display="$1"
-    debug "placing vncserver@${display}.service in /etc/systemd/system"
-    sudo cp /usr/lib/systemd/system/vncserver@.service \
-            "/etc/systemd/system/vncserver@${display}.service"
-    sudo systemctl --quiet daemon-reload
-}
-
-vnc_svc_enable () {
-    # format: ":##"
-    local display="$1"
-    debug "enabling vncserver on display $display"
-    sudo systemctl --quiet enable "vncserver@${display}.service"
-}
-
-vnc_svc_start () {
-    # format: ":##"
-    local display="$1"
-    debug "starting vncserver on display $display"
-    sudo systemctl --quiet start "vncserver@${display}"
+    printf '%s=%s\n' "$display" "$user" | sudo tee -a "$VNC_USER_CONFIG" >/dev/null
 }
 
 set_admin () {
     local user="$1"
     debug "making $user admin"
-    sudo usermod -aG wheel $user
+    sudo usermod -aG wheel "$user"
 }
 
+# Maps UID to display number using the last two digits of the UID + offset.
+# Collisions (e.g. UID 1000 and 1100 both -> :10) are detected by the caller
+# against existing VNC config and reported via ERR_DISPLAY_COLLISION rather
+# than silently appending a duplicate.
 get_display () {
     local user="$1"
-    local uid="$(id -u $user)"
-    local uid_end="${uid:2:2}"
-    debug "getting display for $user..."
-
-    if [[ ${uid_end:0:1} -eq 0 ]]; then uid_end=${uid_end:1:1}; fi
-
-    local display_num="$((${uid_end} + 10))"
-    debug "display :$display_num"
-    echo ":${display_num}"
+    local uid
+    uid=$(id -u "$user")
+    printf ':%s' "$(( uid % 100 + DISPLAY_OFFSET ))"
 }
 
 print_vnc_info () {
     local user="$1"
     local display="$2"
-    local port="59$(echo ${display} | cut -d ':' -f 2)"
-
-    printf "${user} - port ${port}\n"
-}
-
-get_sysusers () {
-    debug "getting system user list..."
-    syslist=($(cat /etc/passwd))
-    for ((i=0; i<${#syslist[@]}; i++)); do
-        syslist[$i]=$(echo ${syslist[$i]} | cut -d ':' -f1)
-    done
-
-    local dbstr="found system users:"
-    for item in ${syslist[@]}; do
-        dbstr="${dbstr} $item"
-    done
-    debug "$dbstr"
-    echo "${syslist[@]}"
-}
-
-get_vncusers () {
-    debug "getting VNC user list..."
-    vnclist=($(grep -v "#" /etc/tigervnc/vncserver.users))
-    for ((i=0; i<${#vnclist[@]}; i++)); do
-        vnclist[$i]=$(echo ${vnclist[$i]} | cut -d '=' -f2)
-    done
-    
-    local dbstr="found vnc users:"
-    for item in ${vnclist[@]}; do
-        dbstr="${dbstr} $item"
-    done
-    debug "$dbstr"
-    echo "${vnclist[@]}"
-}
-
-debug () {
-    local msg="$1"
-    if [[ ${DEBUG} ]]; then
-        printf "${ANSI_YELLOW}[-]${ANSI_CLEAR} %s\n" "${msg}" >&2
-    fi
-}
-
-version () {
-    printf "${VERSION}\n"
+    printf '%s - port %s\n' "$user" "$(( VNC_PORT_BASE + ${display#:} ))"
 }
 
 main () {
-    parse_args "$@" # sets ARGS[@] to supplied usernames
-    CURRENT_SYS_USERS=($(get_sysusers))
-    CURRENT_VNC_USERS=($(get_vncusers))
+    parse_args "$@"
 
-    # pre-create user - system
-    for user in ${ARGS[@]}; do
-        if [[ ! " ${CURRENT_SYS_USERS[@]} " =~ " ${user} " ]]; then
-            if [[ ! ${PASSWORD} ]]; then
-                finish $ERR_NO_PASSWD "new user given with no PASSWORD"
-            fi
-            create_home "$user"
-            write_userfile "$user" "${USER_FILE}"
-            CHOWN_LIST+=("$user")
-        else
+    if [[ ! -f $VNC_USER_CONFIG ]]; then
+        finish "$ERR_NO_VNCSRV" "tigervnc-server config not found"
+    fi
+
+    get_sysusers
+    get_vncusers
+
+    declare -A sys_user_set=()
+    declare -A vnc_user_set=()
+    declare -A vnc_display_set=()
+    local u d
+    for u in "${CURRENT_SYS_USERS[@]}"; do sys_user_set[$u]=1; done
+    for u in "${CURRENT_VNC_USERS[@]:-}";   do [[ -n $u ]] && vnc_user_set[$u]=1; done
+    for d in "${CURRENT_VNC_DISPLAYS[@]:-}"; do [[ -n $d ]] && vnc_display_set[$d]=1; done
+
+    local user
+    for user in "${ARGS[@]}"; do
+        if [[ -n ${sys_user_set[$user]:-} ]]; then
             debug "skipping $user, already created"
+            continue
         fi
+        if [[ -z $PASSWORD ]]; then
+            finish "$ERR_NO_PASSWD" "new user given with no PASSWORD"
+        fi
+        create_home "$user"
+        write_userfile "$user" "$USER_FILE"
+        CHOWN_LIST+=("$user")
     done
 
-    if [[ -f ${USER_FILE} ]]; then
-        create_users "${USER_FILE}"
-        for user in ${CHOWN_LIST[@]}; do
-            chown_home $user
-            if [[ "${ADMIN}" == "yes" ]];then
-                set_admin $user
-            fi
+    if (( ${#CHOWN_LIST[@]} > 0 )); then
+        create_users "$USER_FILE"
+        for user in "${CHOWN_LIST[@]}"; do
+            chown_home "$user"
+            [[ -n $ADMIN ]] && set_admin "$user"
         done
     fi
 
-    # post-create user - vnc
-    vnc_status=""
-    for user in ${ARGS[@]}; do
-        if [[ ! " ${CURRENT_VNC_USERS[@]} " =~ " ${user} " ]]; then
-            display="$(get_display $user)"
-            write_vncconfig "${user}" "${display}"
-            set_vncpasswd "${user}"
-            vnc_svc_enable "${display}"
-            if [[ "${START_SVC}" == "yes" ]]; then
-                vnc_svc_start "${display}"
-            fi
-            vnc_status="${vnc_status}$(print_vnc_info ${user} ${display})\n"
-        else
-            vnc_status="${vnc_status}skipping ${user}, already in VNC config\n"
+    local -a vnc_status=()
+    local display
+    for user in "${ARGS[@]}"; do
+        if [[ -n ${vnc_user_set[$user]:-} ]]; then
+            vnc_status+=("skipping $user, already in VNC config")
+            continue
         fi
+        display=$(get_display "$user")
+        if [[ -n ${vnc_display_set[$display]:-} ]]; then
+            finish "$ERR_DISPLAY_COLLISION" \
+                "display $display for $user already assigned (UID-based mapping collision)"
+        fi
+        write_vncconfig "$user" "$display"
+        vnc_display_set[$display]=1
+        set_vncpasswd "$user"
+        ENABLE_UNITS+=("vncserver@${display}.service")
+        [[ -n $START_SVC ]] && START_UNITS+=("vncserver@${display}.service")
+        vnc_status+=("$(print_vnc_info "$user" "$display")")
     done
 
-    printf "${vnc_status}"
-    # write_userfile
-    # create_users
-    # set_admin
-    # set_vnc
-    # print_userports
+    if (( ${#ENABLE_UNITS[@]} > 0 )); then
+        sudo systemctl --quiet enable "${ENABLE_UNITS[@]}"
+    fi
+    if (( ${#START_UNITS[@]} > 0 )); then
+        sudo systemctl --quiet start "${START_UNITS[@]}"
+    fi
+
+    printf '%s\n' "${vnc_status[@]}"
 }
 
-if [[ ! -f ${VNC_USER_CONFIG} ]]; then
-    finish $ERR_NO_VNCSRV "tigervnc-server config not found"
-fi
-
-if [[ $(basename $0) == "vncuseradd" ]]; then main "$@"; fi
+if [[ ${0##*/} == "vncuseradd" ]]; then main "$@"; fi

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-SCRIPT_DIR=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd)
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "moving vncuseradd to /usr/local/bin..."
-sudo cp ${SCRIPT_DIR}/vncuseradd /usr/local/bin/vncuseradd
+echo "installing vncuseradd to /usr/local/bin..."
+sudo install -Dm0755 "${SCRIPT_DIR}/vncuseradd" /usr/local/bin/vncuseradd
 
-echo "moving man page..."
-sudo mkdir -p /usr/local/man/man8
-sudo cp ${SCRIPT_DIR}/vncuseradd.8.gz /usr/local/man/man8
+echo "installing man page..."
+sudo install -Dm0644 "${SCRIPT_DIR}/vncuseradd.8.gz" /usr/local/man/man8/vncuseradd.8.gz
 
 echo "updating man database..."
-sudo mandb 2>&1>/dev/null
+sudo mandb >/dev/null 2>&1
 
 echo "done!"
