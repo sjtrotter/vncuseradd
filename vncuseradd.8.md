@@ -1,4 +1,4 @@
-% VNCUSERADD(8) vncuseradd 1.2.0
+% VNCUSERADD(8) vncuseradd 1.3.0
 % Stephen Trotter
 % August 2022
 
@@ -9,7 +9,7 @@ vncuseradd - add new LOGIN(s) with VNC capabilities
 **vncuseradd** [*OPTION*]... *LOGIN* [*LOGIN*]...
 
 # DESCRIPTION
-**vncuseradd** utilizes the `newusers' utility to create LOGIN(s) in bulk (if they are not already created) and then assigns each LOGIN the next available VNC display number, starting from *:10*.
+**vncuseradd** uses `useradd' to create each LOGIN (if it is not already on the system) with a home directory copied from **/etc/skel**, then assigns each LOGIN the next available VNC display number, starting from *:10*.
 
 **vncuseradd** expects TigerVNC to be installed on the system, with the user configuration file stored at **/etc/tigervnc/vncserver.users**.
 
@@ -74,7 +74,7 @@ Generated passwords use an alphabet that excludes visually ambiguous characters 
 : Could not write credentials file specified with *-o*.
 
 # BUGS
-- -a will not have an effect if the user is already created, or if they are created and the home directory was already present before running this utility; i.e. this script will only add users to wheel if they are created by it completely.
+- -a will not have an effect if the user is already on the system; **vncuseradd** only adds users to the wheel group when it creates them itself.
 
 # COPYRIGHT
 Copyright 2022 Stephen Trotter. License GPLv3+: GNU GPL version 3 or later. <https://gnu.org/licenses/gpl.html>. This is free software: you are free to change and redistribute it. There is NO WARRANTY, to the extent permitted by law.
