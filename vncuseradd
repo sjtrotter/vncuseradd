@@ -47,16 +47,22 @@ $PROG  - add new LOGIN(s) with VNC capabilities
 Usage: $PROG [OPTION] -p PASSWORD LOGIN [LOGIN]...
 
 Options:
-  -a            make the LOGIN(s) an admin account
-  -p PASSWORD   system password (not VNC) of the new account
-                for more than one LOGIN, PASSWORD will apply to all.
-                this input method is *NOT SECURE*. have user change ASAP.
-  -h            display this help message and exit
-  -s            starts the services now (otherwise reboot or start manually)
-  -v            turn on debug mode
-  -V            display version
-
 EOF
+    # BEGIN GENERATED:OPTIONS
+    cat <<'GENEOF'
+  -a            make the LOGIN(s) an admin account (adds user(s) to wheel
+                group)
+  -p PASSWORD   Default password of the new user(s). For more than one LOGIN,
+                PASSWORD will apply to all. This input method is NOT SECURE -
+                have user(s) change ASAP with passwd
+  -h            Display the help message.
+  -s            Starts the VNC service(s) now (otherwise reboot or start
+                manually)
+  -v            Turn on debug mode.
+  -V            Display version.
+GENEOF
+    # END GENERATED:OPTIONS
+    echo
 }
 
 debug () {

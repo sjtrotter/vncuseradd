@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Regenerate vncuseradd.8.gz from vncuseradd.8.md and sync the OPTIONS
+# block into README.md and the usage() function in vncuseradd.
+#
+# Source of truth: vncuseradd.8.md
+# Generated:       vncuseradd.8.gz
+#                  the block between BEGIN/END GENERATED:OPTIONS markers
+#                  in README.md and vncuseradd
+#
+# Run with no args. Exits 0 on success (whether or not anything changed).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+readonly SRC=vncuseradd.8.md
+readonly GZ=vncuseradd.8.gz
+readonly SCRIPT=vncuseradd
+readonly README=README.md
+readonly MARKER_BEGIN_SH='# BEGIN GENERATED:OPTIONS'
+readonly MARKER_END_SH='# END GENERATED:OPTIONS'
+readonly MARKER_BEGIN_MD='<!-- BEGIN GENERATED:OPTIONS -->'
+readonly MARKER_END_MD='<!-- END GENERATED:OPTIONS -->'
+
+die () { echo "build: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 1. Regenerate the gzipped manpage.
+# gzip -n is REQUIRED: without it the archive embeds the source filename
+# and mtime, producing a different .gz on every run, which would defeat
+# the drift detection in CI.
+# ---------------------------------------------------------------------------
+if command -v pandoc >/dev/null 2>&1; then
+    echo "build: regenerating $GZ"
+    pandoc -s -t man "$SRC" | gzip -n > "$GZ"
+else
+    echo "build: WARNING pandoc not installed; skipping $GZ regeneration" >&2
+    echo "build: install pandoc to regenerate the manpage locally" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Extract the OPTIONS section from the manpage source and render it as
+# plaintext (`-x[ ARG]   description...`, wrapped at column 16 continuation).
+# ---------------------------------------------------------------------------
+extract_options () {
+    # Awk extracts each option spec line and its following description into
+    # one tab-separated record. Sed then strips manpage formatting:
+    #   **bold**  -> bold
+    #   *italic*  -> italic
+    #   `word'    -> word   (groff-style display quote)
+    awk '
+        /^# OPTIONS/ { in_opts = 1; next }
+        /^# /        { in_opts = 0 }
+        !in_opts     { next }
+        /^\*\*-/ {
+            spec = $0
+            getline desc
+            sub(/^: /, "", desc)
+            print spec "\t" desc
+        }
+    ' "$SRC" | sed -E "
+        s/\\*\\*//g
+        s/\\*//g
+        s/\`([^\`]+)'/\1/g
+        s/\`//g
+    "
+}
+
+format_options () {
+    local spec desc folded first line
+    while IFS=$'\t' read -r spec desc; do
+        folded=$(printf '%s\n' "$desc" | fold -s -w 62 | sed 's/[[:space:]]\+$//')
+        first=1
+        while IFS= read -r line; do
+            if (( first )); then
+                printf '  %-12s  %s\n' "$spec" "$line"
+                first=0
+            else
+                printf '  %-12s  %s\n' "" "$line"
+            fi
+        done <<< "$folded"
+    done
+}
+
+OPTIONS_BLOCK=$(extract_options | format_options)
+[[ -n $OPTIONS_BLOCK ]] || die "no options extracted from $SRC; check that # OPTIONS section exists"
+
+# ---------------------------------------------------------------------------
+# 3. Inject between markers in a target file.
+# ---------------------------------------------------------------------------
+inject () {
+    local file="$1" begin="$2" end="$3" body="$4"
+    grep -qF "$begin" "$file" || die "$file is missing marker: $begin"
+    grep -qF "$end"   "$file" || die "$file is missing marker: $end"
+
+    local tmp
+    tmp=$(mktemp)
+    awk -v begin="$begin" -v end="$end" -v body="$body" '
+        function trim(s) {
+            sub(/^[[:space:]]+/, "", s)
+            sub(/[[:space:]]+$/, "", s)
+            return s
+        }
+        { line = trim($0) }
+        line == begin { print; print body; in_block = 1; next }
+        line == end   { in_block = 0; print; next }
+        !in_block     { print }
+    ' "$file" > "$tmp"
+    # cat-and-rm preserves the target file's mode bits (mv would clobber
+    # them with mktemp's default 0600).
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+}
+
+README_BODY=$(printf '```\n%s\n```' "$OPTIONS_BLOCK")
+SCRIPT_BODY=$(printf "    cat <<'GENEOF'\n%s\nGENEOF" "$OPTIONS_BLOCK")
+
+echo "build: syncing $README"
+inject "$README" "$MARKER_BEGIN_MD" "$MARKER_END_MD" "$README_BODY"
+
+echo "build: syncing $SCRIPT"
+inject "$SCRIPT" "$MARKER_BEGIN_SH" "$MARKER_END_SH" "$SCRIPT_BODY"
+
+echo "build: done"
